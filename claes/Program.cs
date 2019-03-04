@@ -9,25 +9,128 @@ using System.Net;
 using System.ComponentModel;
 using System.IO;
 using System.Security.Cryptography;
+using System.Collections.Concurrent;
+using System.IO.Compression;
 
 namespace claes
 {
-    class DLProgress
+    public class DownloadView
     {
-        //[STAThread]
-        static void Main(string[] args)
+        public DownloadView(ProgressBar progressBar, Button cancelBtn, Label progress, Label title)
         {
-            Application.Run(new MainWindow());
+            ProgressBar = progressBar;
+            CancelBtn = cancelBtn;
+            Progress = progress;
+            Title = title;
+        }
+
+        public ProgressBar ProgressBar;
+        public Button CancelBtn;
+        public Label Progress;
+        public Label Title;
+
+    }
+
+    public static class ZipArchiveExtensions
+    {
+        public static void ExtractToDirectory(this string archivePath, string destinationDirectoryName, bool overwrite)
+        {
+            using (ZipArchive archive = ZipFile.OpenRead(archivePath))
+            {
+                if (!overwrite)
+                {
+                    archive.ExtractToDirectory(destinationDirectoryName);
+                    return;
+                }
+                foreach (ZipArchiveEntry file in archive.Entries)
+                {
+                    string completeFileName = Path.Combine(destinationDirectoryName, file.FullName);
+                    string directory = Path.GetDirectoryName(completeFileName);
+
+                    if (!Directory.Exists(directory))
+                        Directory.CreateDirectory(directory);
+
+                    if (file.Name != "")
+                        file.ExtractToFile(completeFileName, true);
+                }
+            }
         }
     }
+
+    public class KeyFile
+    {
+        public KeyFile(string keyFilePath, string title)
+        {
+            this.keyFilePath = keyFilePath;
+            this.title = title;
+        }
+
+        public string keyFilePath { get; set; }
+        public string title { get; set; }
+    }
+
+    class Downloader
+    {
+        private DownloadView dView;
+        private Form uiThread;
+        private string title;
+
+        public Downloader(DownloadView downloadView, Form uiThread, string title)
+        {
+            this.title = title;
+            this.uiThread = uiThread;
+            dView = downloadView;
+            dView.CancelBtn.Click += new EventHandler(ActionRun);
+
+            uiThread.Invoke(new Action<string>(delegate (string _title) {
+                dView.Title.Text = _title;
+            }), title);
+        }
+
+        public Task StartDownLoad(Uri uri, string fileName)
+        {
+            Task downloadTask;
+            using (WebClient wc = new WebClient())
+            {
+                wc.DownloadProgressChanged += new DownloadProgressChangedEventHandler(DownloadChanged);
+                downloadTask = wc.DownloadFileTaskAsync(uri, fileName);
+            }
+
+            return downloadTask;
+        }
+
+        private void ActionRun(object sender, EventArgs e)
+        {
+            //if (dView.CancelBtn.Name == "Cancel") wcw.CancelAsync();
+            //if (dView.CancelBtn.Name == "Close") Application.Exit();
+        }
+
+        public void DownloadChanged(object sender, DownloadProgressChangedEventArgs e)
+        {
+            uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
+                dView.Progress.Text = e.TotalBytesToReceive + "byte / " + e.BytesReceived + "byte";
+
+                if (totalBytes > byteRec)
+                {
+                    dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
+                    dView.ProgressBar.Value = (int)(byteRec / 1000);
+                }
+            }), e.TotalBytesToReceive, e.BytesReceived);
+
+        }
+    }
+
 
     class MainWindow : Form
     {
         private string currentDirectory;
         private string cacheDirectory;
         private string keyDirectory;
-        private Dictionary<string,string> keyDict;
+        private string modDirectory;
+        private ConcurrentDictionary<string, KeyFile> keyDict;
+        private ConcurrentDictionary<string, string> keyFilePath2Md5;
         private List<DownloadView> downloadViews;
+
 
         static string CalculateMD5(string filename)
         {
@@ -41,6 +144,8 @@ namespace claes
             }
         }
 
+
+
         public MainWindow()
         {
             SetUp();
@@ -51,9 +156,10 @@ namespace claes
 
         private void SetUp()
         {
-            currentDirectory = Directory.GetCurrentDirectory();
+            System.Diagnostics.Debug.WriteLine("setup実行します");
 
-            downloadViews = new List<DownloadView>();
+            // カレントディレクトリを基準とする
+            currentDirectory = Directory.GetCurrentDirectory();
 
             // cacheフォルダをチェック
             cacheDirectory = Path.Combine(currentDirectory, "claes.cache");
@@ -62,53 +168,71 @@ namespace claes
                 Directory.CreateDirectory(cacheDirectory);
             }
 
-            // ./resourceフォルダをチェック
+            // フォルダをチェック
             keyDirectory = Path.Combine(currentDirectory, "claes.key");
             if (!Directory.Exists(keyDirectory))
             {
                 Directory.CreateDirectory(keyDirectory);
             }
 
-            // resourceフォル内のリソースを列挙
-            DirectoryInfo di = new System.IO.DirectoryInfo(keyDirectory);
-            FileInfo[] files = di.GetFiles("*.key", SearchOption.TopDirectoryOnly);
-
-            TableLayoutPanel TableLayoutPanel1 = new TableLayoutPanel()
+            // ./modフォルダをチェック
+            modDirectory = Path.Combine(currentDirectory, "mod");
+            if (!Directory.Exists(modDirectory))
             {
-                Location = new Point(0, 0),
-                Width = 550,
-                Height = 250,
-                Margin= new Padding(0,0,0,0),
-                Padding = new Padding(0, 0, 0, 0),
-                Parent = this
-            };
-
-
-            int idx = 0;
-            keyDict = new Dictionary<string, string>();
-            foreach (FileInfo fileInfo in files)
-            {
-                string tmodfilePath = fileInfo.FullName;
-
-                using (StreamReader r = new StreamReader(tmodfilePath))
-                {
-                    string keyFilePath = r.ReadToEnd();
-
-                    keyDict.Add(Path.GetFileNameWithoutExtension(fileInfo.Name), keyFilePath);
-                }
-
-                // コンポーネントを作成
-                SetComponents(idx++, TableLayoutPanel1);
+                Directory.CreateDirectory(modDirectory);
             }
 
-            //
+            // .keyを見る
+            DirectoryInfo di = new System.IO.DirectoryInfo(keyDirectory);
+            FileInfo[] files = di.GetFiles("*.key", SearchOption.TopDirectoryOnly);
+            keyDict = new ConcurrentDictionary<string, KeyFile>();
+            Parallel.ForEach(files, fileInfo =>
+            {
+                // 行読み取り
+                string lines = "";
+                using (StreamReader r = new StreamReader(fileInfo.FullName))
+                {
+                    lines = r.ReadToEnd();
+                }
+
+                // 行で分割
+                string [] lists = lines.Split('\n');
+                if(lists.Length >= 2)
+                {
+                    keyDict.GetOrAdd(Path.GetFileNameWithoutExtension(fileInfo.Name), new KeyFile(lists[1], lists[0]));
+                }
+            });
+
+            // キーファイルを集約してMD5化する。ほとんど同じファイルを見ているはずなので…
+            keyFilePath2Md5 = new ConcurrentDictionary<string, string>();
+            Parallel.ForEach(keyDict.Values.Select(x => x.keyFilePath).Distinct(), keyFilePath =>
+            {
+                keyFilePath2Md5.GetOrAdd(keyFilePath, CalculateMD5(keyFilePath));
+            });
+
+            // Viewを作成する
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.Width = 580;
+            this.Width = 820;
             this.Height = 300;
             this.AutoScroll = true;
             this.Text = "ファイルのダウンロード";
-        }
+            TableLayoutPanel TableLayoutPanel1 = new TableLayoutPanel()
+            {
+                Location = new Point(0, 0),
+                Width = 800,
+                Height = 250,
+                Margin = new Padding(0, 0, 0, 0),
+                Padding = new Padding(0, 0, 0, 0),
+                Parent = this
+            };
+            downloadViews = new List<DownloadView>();
+            for (int i = 0; i < files.Length; i++)
+            {
+                SetComponents(i, TableLayoutPanel1);
+            }
 
+            System.Diagnostics.Debug.WriteLine("setup実行しました");
+        }
 
 
         private void SetComponents(int n, TableLayoutPanel table)
@@ -119,7 +243,7 @@ namespace claes
             {
                 Text = "Name",
                 Font = font,
-                Size = new Size(50, 20)
+                Size = new Size(200, 20)
             };
             table.Controls.Add(title, 1, n);
 
@@ -127,7 +251,7 @@ namespace claes
             {
                 Text = "準備中…",
                 Font = font,
-                Size = new Size(100, 20)
+                Size = new Size(200, 20)
             };
             table.Controls.Add(progress, 2, n);
 
@@ -149,101 +273,53 @@ namespace claes
                 Name = "Cancel"
             };
             table.Controls.Add(runBtn, 4, n);
-
             this.downloadViews.Add(new DownloadView(bar, runBtn, progress, title));
 
         }
 
         private async void FormShow(Object sender, EventArgs e)
         {
-            int idx = 0;
-
+            // ダウンロードは別スレッドに投げて非同期でやる
             List<Task> tasks = new List<Task>();
-
-            foreach (KeyValuePair<string,string> item in keyDict){
-
-                Downloader dl = new Downloader(downloadViews[idx++]);
-
-                string exeMd5 = CalculateMD5(item.Value);
-
+            int idx = 0;
+            foreach (KeyValuePair<string,KeyFile> item in keyDict){
+                Downloader dl = new Downloader(downloadViews[idx++],this, item.Value.title);
+                string exeMd5 = keyFilePath2Md5.GetOrAdd(item.Value.keyFilePath,"NO-MD5");
                 string cdnUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/" + item.Key + "/" + exeMd5;
-
-                tasks.Add(dl.StartDownLoad(new Uri(cdnUrl), Path.Combine(cacheDirectory,item.Key), this));
-
+                tasks.Add(dl.StartDownLoad(new Uri(cdnUrl), Path.Combine(cacheDirectory,item.Key)));
             };
 
-            await Task.WhenAll(tasks);
+            // 終わるまで待ってる
+            try
+            {
+                await Task.WhenAll(tasks);
+            }catch(Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex.Message); ;
+            }
+            System.Diagnostics.Debug.WriteLine("All file downloading is finished.");
 
-            System.Diagnostics.Debug.WriteLine("form finish");
+            // zipファイル展開
+            // これは非同期でやらない。なぜならば展開に順番が必要だから
+            DirectoryInfo di = new System.IO.DirectoryInfo(cacheDirectory);
+            FileInfo[] files = di.GetFiles("*", SearchOption.TopDirectoryOnly);
+            foreach(FileInfo info in files)
+            {
+                ZipArchiveExtensions.ExtractToDirectory(info.FullName, modDirectory, true);
+            }
 
-            //Application.Exit();
+            Application.Exit();
         }
         private void actionClose(object sender, EventArgs e) { this.Close(); }
 
     }
 
-    class Downloader
+    class DLProgress
     {
-        private DownloadView dView;
-        private Form uiThread;
-
-        public Downloader(DownloadView downloadView)
+        //[STAThread]
+        static void Main(string[] args)
         {
-            dView = downloadView;
-            dView.CancelBtn.Click += new EventHandler(ActionRun);
+            Application.Run(new MainWindow());
         }
-
-        public Task StartDownLoad(Uri uri, string fileName, Form uiThread)
-        {
-            this.uiThread = uiThread;
-            
-            Task downloadTask;
-            using (WebClient wc = new WebClient())
-            {
-                wc.DownloadProgressChanged += new DownloadProgressChangedEventHandler(DownloadChanged);
-                downloadTask = wc.DownloadFileTaskAsync(uri, fileName);
-            }
-
-            return downloadTask;
-        }
-
-        private void ActionRun(object sender, EventArgs e)
-        {
-            //if (dView.CancelBtn.Name == "Cancel") wcw.CancelAsync();
-            //if (dView.CancelBtn.Name == "Close") Application.Exit();
-        }
-
-        public void DownloadChanged(object sender,DownloadProgressChangedEventArgs e)
-        {
-
-            uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
-                    dView.Progress.Text = e.TotalBytesToReceive + "byte / " + e.BytesReceived + "byte";
-
-                    if (totalBytes > byteRec)
-                    {
-                        dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
-                        dView.ProgressBar.Value = (int)(byteRec / 1000);
-                    }
-                }
-            ), e.TotalBytesToReceive, e.BytesReceived);
-
-        }
-    }
-
-    class DownloadView
-    {
-        public DownloadView(ProgressBar progressBar, Button cancelBtn, Label progress, Label title)
-        {
-            ProgressBar = progressBar;
-            CancelBtn = cancelBtn;
-            Progress = progress;
-            Title = title;
-        }
-
-        public ProgressBar ProgressBar;
-        public Button CancelBtn;
-        public Label Progress;
-        public Label Title;
-
     }
 }
