@@ -73,6 +73,17 @@ namespace claes
             DirectoryInfo di = new System.IO.DirectoryInfo(keyDirectory);
             FileInfo[] files = di.GetFiles("*.key", SearchOption.TopDirectoryOnly);
 
+            TableLayoutPanel TableLayoutPanel1 = new TableLayoutPanel()
+            {
+                Location = new Point(0, 0),
+                Width = 550,
+                Height = 250,
+                Margin= new Padding(0,0,0,0),
+                Padding = new Padding(0, 0, 0, 0),
+                Parent = this
+            };
+
+
             int idx = 0;
             keyDict = new Dictionary<string, string>();
             foreach (FileInfo fileInfo in files)
@@ -82,98 +93,90 @@ namespace claes
                 using (StreamReader r = new StreamReader(tmodfilePath))
                 {
                     string keyFilePath = r.ReadToEnd();
-                    string keyFileMd5 = CalculateMD5(keyFilePath);
 
-                    keyDict.Add(Path.GetFileNameWithoutExtension(fileInfo.Name), keyFileMd5);
+                    keyDict.Add(Path.GetFileNameWithoutExtension(fileInfo.Name), keyFilePath);
                 }
 
                 // コンポーネントを作成
-                SetComponents(idx++);
+                SetComponents(idx++, TableLayoutPanel1);
             }
 
             //
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.Width = 500;
-            this.Height = 200;
+            this.Width = 580;
+            this.Height = 300;
             this.AutoScroll = true;
             this.Text = "ファイルのダウンロード";
         }
 
 
 
-        private void SetComponents(int n)
+        private void SetComponents(int n, TableLayoutPanel table)
         {
-            n++;
-
-            Font font = new Font("Meiryo UI", 10);
-
-            ProgressBar bar = new ProgressBar()
-            {
-                Size = new Size(450, 20),
-                Location = new Point(20, 40* n),
-                Minimum = 0,
-                Maximum = 1000000,
-                Value = 0,
-                Parent = this,
-            };
-
-            Button runBtn = new Button()
-            {
-                Size = new Size(100, 25),
-                Font = font,
-                Location = new Point(360, 120* n),
-                Text = "キャンセル",
-                Name = "Cancel",
-                Parent = this,
-            };
-            //runBtn.Click += new EventHandler(actionRun);
+            Font font = new Font("Meiryo UI", 8);
 
             Label title = new Label()
             {
-                Text = "準備中…",
+                Text = "Name",
                 Font = font,
-                Size = new Size(450, 20),
-                Location = new Point(20, 20 * n),
-                Parent = this,
+                Size = new Size(50, 20)
             };
+            table.Controls.Add(title, 1, n);
 
             Label progress = new Label()
             {
                 Text = "準備中…",
                 Font = font,
-                Size = new Size(450, 20),
-                Location = new Point(20, 70 * n),
-                Parent = this,
+                Size = new Size(100, 20)
             };
+            table.Controls.Add(progress, 2, n);
 
-            Label address = new Label()
+            ProgressBar bar = new ProgressBar()
             {
-                Text = "準備中…",
-                Font = font,
-                Size = new Size(450, 20),
-                Location = new Point(20, 95 * n),
-                Parent = this,
+                Size = new Size(250, 20),
+                Minimum = 0,
+                Maximum = 1000000,
+                Value = 0
             };
+            table.Controls.Add(bar, 3, n);
 
-            this.downloadViews.Add(new DownloadView(bar, runBtn, progress, address, title));
+
+            Button runBtn = new Button()
+            {
+                Size = new Size(100, 20),
+                Font = font,
+                Text = "キャンセル",
+                Name = "Cancel"
+            };
+            table.Controls.Add(runBtn, 4, n);
+
+            this.downloadViews.Add(new DownloadView(bar, runBtn, progress, title));
 
         }
 
-        private void FormShow(Object sender, EventArgs e)
+        private async void FormShow(Object sender, EventArgs e)
         {
             int idx = 0;
 
-            Parallel.ForEach(keyDict, item => {
+            List<Task> tasks = new List<Task>();
+
+            foreach (KeyValuePair<string,string> item in keyDict){
 
                 Downloader dl = new Downloader(downloadViews[idx++]);
 
-                string cdnUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/" + item.Key + "/" + item.Value;
+                string exeMd5 = CalculateMD5(item.Value);
 
-                dl.StartDownLoad(new Uri(cdnUrl), Path.Combine(cacheDirectory, "a.zip"), this);
+                string cdnUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/" + item.Key + "/" + exeMd5;
 
-            });
+                tasks.Add(dl.StartDownLoad(new Uri(cdnUrl), Path.Combine(cacheDirectory,item.Key), this));
+
+            };
+
+            await Task.WhenAll(tasks);
 
             System.Diagnostics.Debug.WriteLine("form finish");
+
+            //Application.Exit();
         }
         private void actionClose(object sender, EventArgs e) { this.Close(); }
 
@@ -182,8 +185,7 @@ namespace claes
     class Downloader
     {
         private DownloadView dView;
-        private WebClient wcw;
-        private Form a;
+        private Form uiThread;
 
         public Downloader(DownloadView downloadView)
         {
@@ -191,24 +193,18 @@ namespace claes
             dView.CancelBtn.Click += new EventHandler(ActionRun);
         }
 
-        public void StartDownLoad(Uri uri, string fileName, Form a)
+        public Task StartDownLoad(Uri uri, string fileName, Form uiThread)
         {
-
-            this.a = a;
-
-            //非同期ダウンロードを開始する
+            this.uiThread = uiThread;
+            
+            Task downloadTask;
             using (WebClient wc = new WebClient())
             {
-                wcw = wc;
-
-                wc.DownloadFileAsync(uri, fileName);
-
                 wc.DownloadProgressChanged += new DownloadProgressChangedEventHandler(DownloadChanged);
-
+                downloadTask = wc.DownloadFileTaskAsync(uri, fileName);
             }
 
-
-            System.Diagnostics.Debug.WriteLine("dl finish");
+            return downloadTask;
         }
 
         private void ActionRun(object sender, EventArgs e)
@@ -219,10 +215,10 @@ namespace claes
 
         public void DownloadChanged(object sender,DownloadProgressChangedEventArgs e)
         {
-            //string aaa = e.TotalBytesToReceive + "byte 中 " + e.BytesReceived + "byte";
 
+            uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
+                    dView.Progress.Text = e.TotalBytesToReceive + "byte / " + e.BytesReceived + "byte";
 
-            a.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
                     if (totalBytes > byteRec)
                     {
                         dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
@@ -236,19 +232,17 @@ namespace claes
 
     class DownloadView
     {
-        public DownloadView(ProgressBar progressBar, Button cancelBtn, Label progress, Label address, Label title)
+        public DownloadView(ProgressBar progressBar, Button cancelBtn, Label progress, Label title)
         {
             ProgressBar = progressBar;
             CancelBtn = cancelBtn;
             Progress = progress;
-            Address = address;
             Title = title;
         }
 
         public ProgressBar ProgressBar;
         public Button CancelBtn;
         public Label Progress;
-        public Label Address;
         public Label Title;
 
     }
