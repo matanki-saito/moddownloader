@@ -20,7 +20,7 @@ namespace claes
             CancelBtn = cancelBtn;
             Progress = progress;
             Title = title;
-        }
+        }       
 
         public ProgressBar ProgressBar { get; }
         public Button CancelBtn { get; }
@@ -156,17 +156,15 @@ namespace claes
             Parallel.ForEach(files, fileInfo =>
             {
                 // 行読み取り
-                var lines ="";
                 using (var r = new StreamReader(fileInfo.FullName))
                 {
-                    lines = r.ReadToEnd();
-                }
-
-                // 行で分割
-                var lists = lines.Split('\n');
-                if(lists.Length >= 2)
-                {
-                    keyDict.GetOrAdd(Path.GetFileNameWithoutExtension(fileInfo.Name), new KeyFile(lists[1], lists[0]));
+                    var lines = r.ReadToEnd();
+                    // 行で分割
+                    var lists = lines.Split('\n');
+                    if(lists.Length >= 2)
+                    {
+                        keyDict.GetOrAdd(Path.GetFileNameWithoutExtension(fileInfo.Name), new KeyFile(lists[1], lists[0]));
+                    }
                 }
             });
 
@@ -303,7 +301,7 @@ namespace claes
     class DLProgress
     {
         [STAThread]
-        private static void Main(string[] args)
+        private static void Main()
         {
             Application.Run(new MainWindow());
         }
