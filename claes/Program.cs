@@ -8,6 +8,7 @@ using System.Net;
 using System.IO;
 using System.Security.Cryptography;
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.IO.Compression;
 
 namespace claes
@@ -35,28 +36,36 @@ namespace claes
         {
             KeyFilePath = keyFilePath;
             Title = title;
+            DownloadComplete = false;
         }
 
         public string KeyFilePath { get; }
         public string Title { get;}
+        public bool DownloadComplete { set; get; }
+        public string TempFileName { get; set; }
+        public string TempFileMd5 { get; set; }
+        
+        public string cachedMd5 { get; set; }
     }
 
     internal class Downloader
     {
-        private static string baseUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/";
-        
+        private const string BaseUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/";
+
         private readonly DownloadView dView;
         private readonly Form uiThread;
+        private readonly KeyFile keyFile;
 
-        public Downloader(DownloadView downloadView, Form uiThread, string title)
+        public Downloader(DownloadView downloadView, Form uiThread, KeyFile keyFile)
         {
             this.uiThread = uiThread;
+            this.keyFile = keyFile;
             dView = downloadView;
             dView.CancelBtn.Click += ActionRun;
 
             uiThread.Invoke(new Action<string>(delegate (string titleD) {
                 dView.Title.Text = titleD;
-            }), title);
+            }), keyFile.Title);
         }
 
         private static void ActionRun(object sender, EventArgs e)
@@ -64,16 +73,33 @@ namespace claes
             System.Diagnostics.Debug.WriteLine("cancel button");
         }
 
-        public Task StartDownLoad(string key, string exeMd5, string fileName)
+        public Task StartDownLoad(string key, string exeMd5)
         {
             Task downloadTask;
             using (var wc = new WebClient())
             {
+                var f = keyFile.TempFileName =Path.GetTempFileName();
                 wc.DownloadProgressChanged += DownloadChanged;
-                downloadTask = wc.DownloadFileTaskAsync(new Uri(baseUrl + key + "/" + exeMd5), fileName);
+                wc.DownloadFileCompleted += MyDownloadFileCompletedFunc;
+
+                var param1 = keyFile.cachedMd5 != null ? "?dll_md5=" + keyFile.cachedMd5 : "";
+                
+                var uri = new Uri(BaseUrl + key + "/" + exeMd5 + param1);
+                
+                downloadTask = wc.DownloadFileTaskAsync(uri,f);
             }
 
             return downloadTask;
+        }
+
+        private void MyDownloadFileCompletedFunc(object sender,AsyncCompletedEventArgs args)
+        {
+            if (args.Error == null)
+            {
+                keyFile.DownloadComplete = true;
+            }
+
+            keyFile.TempFileMd5 = Util.CalculateMd5(keyFile.TempFileName);
         }
 
         private void DownloadChanged(object sender, DownloadProgressChangedEventArgs e)
@@ -81,13 +107,26 @@ namespace claes
             uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
                 dView.Progress.Text = e.TotalBytesToReceive + "byte / " + e.BytesReceived + "byte";
 
-                if (totalBytes > byteRec)
-                {
-                    dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
-                    dView.ProgressBar.Value = (int)(byteRec / 1000);
-                }
+                if (totalBytes <= byteRec) return;
+                
+                dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
+                dView.ProgressBar.Value = (int)(byteRec / 1000);
             }), e.TotalBytesToReceive, e.BytesReceived);
+        }
+    }
 
+    internal static class Util
+    {
+        public static string CalculateMd5(string filename)
+        {
+            using (var md5 = MD5.Create())
+            {
+                using (var stream = File.OpenRead(filename))
+                {
+                    var hash = md5.ComputeHash(stream);
+                    return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                }
+            }
         }
     }
     
@@ -100,18 +139,6 @@ namespace claes
         private ConcurrentDictionary<string, KeyFile> keyDict;
         private ConcurrentDictionary<string, string> keyFilePath2Md5;
         private List<DownloadView> downloadViews;
-
-        private static string CalculateMd5(string filename)
-        {
-            using (var md5 = MD5.Create())
-            {
-                using (var stream = File.OpenRead(filename))
-                {
-                    var hash = md5.ComputeHash(stream);
-                    return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
-                }
-            }
-        }
 
         public MainWindow()
         {
@@ -167,12 +194,33 @@ namespace claes
                     }
                 }
             });
+            
+            // .cacheを見る
+            di = new DirectoryInfo(cacheDirectory);
+            files = di.GetFiles("*.cache", SearchOption.TopDirectoryOnly);
+            Parallel.ForEach(files, fileInfo =>
+            {
+                // 行読み取り
+                using (var r = new StreamReader(fileInfo.FullName))
+                {
+                    var lines = r.ReadToEnd();
+                    // 行で分割
+                    var lists = lines.Split('\n');
+                    if (lists.Length != 1) return;
+                    
+                    
+                    var key = Path.GetFileNameWithoutExtension(fileInfo.Name);
+                    var k = keyDict.GetOrAdd(key,new KeyFile("?", "no-title"));
+                    k.cachedMd5 = lists[0];
+                    keyDict.AddOrUpdate(key, new KeyFile("?", "no-title"), (s, file) => k);
+                }
+            });
 
             // キーファイルを集約してMD5化する。ほとんど同じファイルを見ているはずなので…
             keyFilePath2Md5 = new ConcurrentDictionary<string, string>();
             Parallel.ForEach(keyDict.Values.Select(x => x.KeyFilePath).Distinct(), keyFilePath =>
             {
-                keyFilePath2Md5.GetOrAdd(keyFilePath, CalculateMd5(keyFilePath));
+                keyFilePath2Md5.GetOrAdd(keyFilePath, Util.CalculateMd5(keyFilePath));
             });
 
             // Viewを作成する
@@ -191,7 +239,7 @@ namespace claes
                 Parent = this
             };
             downloadViews = new List<DownloadView>();
-            for (var i = 0; i < files.Length; i++)
+            for (var i = 0; i < keyDict.Count; i++)
             {
                 SetComponents(i, tableLayoutPanel1);
             }
@@ -241,15 +289,16 @@ namespace claes
 
         }
 
-        private async void FormShow(Object sender, EventArgs e)
+        private async void FormShow(object sender, EventArgs e)
         {
             // ダウンロードは別スレッドに投げて非同期でやる
             var tasks = new List<Task>();
             var idx = 0;
-            foreach (var item in keyDict){
-                var dl = new Downloader(downloadViews[idx++],this, item.Value.Title);
+            foreach (var item in keyDict)
+            {
+                var dl = new Downloader(downloadViews[idx++], this,item.Value);
                 var exeMd5 = keyFilePath2Md5.GetOrAdd(item.Value.KeyFilePath,"NO-MD5");
-                tasks.Add(dl.StartDownLoad(item.Key,exeMd5 , Path.GetTempFileName()));
+                tasks.Add(dl.StartDownLoad(item.Key,exeMd5));
             }
 
             // 終わるまで待ってる
@@ -264,11 +313,17 @@ namespace claes
 
             // zipファイル展開
             // これは非同期でやらない。なぜならば展開に順番が必要だから
-            var di = new DirectoryInfo(cacheDirectory);
-            var files = di.GetFiles("*", SearchOption.TopDirectoryOnly);
-            foreach(var info in files)
+            foreach (var item in keyDict)
             {
-                ExtractToDirectory(info.FullName, modDirectory, true);
+                if (!item.Value.DownloadComplete) continue;
+                
+                ExtractToDirectory(item.Value.TempFileName, modDirectory, true);
+                
+                // キャッシュフォルダ作る
+                using (var w = new StreamWriter(Path.Combine(cacheDirectory,item.Key + ".cache")))
+                {
+                    w.Write(item.Value.TempFileMd5);
+                }
             }
 
             Application.Exit();
@@ -298,7 +353,7 @@ namespace claes
         }
     }
 
-    class DLProgress
+    internal static class Program
     {
         [STAThread]
         private static void Main()
