@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO.Compression;
+using System.Reflection;
 
 namespace claes
 {
@@ -152,8 +153,8 @@ namespace claes
         {
             System.Diagnostics.Debug.WriteLine("setup実行します");
 
-            // カレントディレクトリを基準とする
-            currentDirectory = Directory.GetCurrentDirectory();
+            // exeのあるディレクトリを基準とする
+            currentDirectory = Directory.GetParent(Assembly.GetExecutingAssembly().Location).FullName;
 
             // cacheフォルダをチェック
             cacheDirectory = Path.Combine(currentDirectory, "claes.cache");
@@ -175,7 +176,7 @@ namespace claes
             {
                 Directory.CreateDirectory(modDirectory);
             }
-
+            
             // .keyを見る
             var di = new DirectoryInfo(keyDirectory);
             var files = di.GetFiles("*.key", SearchOption.TopDirectoryOnly);
@@ -194,6 +195,11 @@ namespace claes
                     }
                 }
             });
+            
+            using (var w = new StreamWriter(Path.Combine(currentDirectory,"debug.txt")))
+            {
+                w.WriteAsync(currentDirectory + "\n" + keyDirectory +"\n" + modDirectory+ "\n" + cacheDirectory);
+            }
             
             // .cacheを見る
             di = new DirectoryInfo(cacheDirectory);
