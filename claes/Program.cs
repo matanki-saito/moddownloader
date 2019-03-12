@@ -54,10 +54,10 @@ namespace claes
         private const string BaseUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/";
 
         private readonly DownloadView dView;
-        private readonly Form uiThread;
+        private readonly MainWindow uiThread;
         private readonly KeyFile keyFile;
 
-        public Downloader(DownloadView downloadView, Form uiThread, KeyFile keyFile)
+        public Downloader(DownloadView downloadView, MainWindow uiThread, KeyFile keyFile)
         {
             this.uiThread = uiThread;
             this.keyFile = keyFile;
@@ -107,7 +107,14 @@ namespace claes
         {
             uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
                 dView.Progress.Text = e.TotalBytesToReceive + "byte / " + e.BytesReceived + "byte";
-
+                
+                if (!uiThread.viewLatch)
+                {
+                    uiThread.ShowInTaskbar = true;
+                    uiThread.WindowState = FormWindowState.Normal;
+                    uiThread.viewLatch = true;
+                }
+                
                 if (totalBytes <= byteRec) return;
                 
                 dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
@@ -140,19 +147,17 @@ namespace claes
         private ConcurrentDictionary<string, KeyFile> keyDict;
         private ConcurrentDictionary<string, string> keyFilePath2Md5;
         private List<DownloadView> downloadViews;
-
+        public bool viewLatch { get; set; }
+        
         public MainWindow()
         {
-            SetUp();
-            System.Diagnostics.Debug.WriteLine("start");
+            viewLatch = false;
+            SetUp(); 
             Shown += FormShow;
-            System.Diagnostics.Debug.WriteLine("finish");
         }
 
         private void SetUp()
         {
-            System.Diagnostics.Debug.WriteLine("setup実行します");
-
             // exeのあるディレクトリを基準とする
             currentDirectory = Directory.GetParent(Assembly.GetExecutingAssembly().Location).FullName;
 
@@ -196,11 +201,6 @@ namespace claes
                 }
             });
             
-            using (var w = new StreamWriter(Path.Combine(currentDirectory,"debug.txt")))
-            {
-                w.WriteAsync(currentDirectory + "\n" + keyDirectory +"\n" + modDirectory+ "\n" + cacheDirectory);
-            }
-            
             // .cacheを見る
             di = new DirectoryInfo(cacheDirectory);
             files = di.GetFiles("*.cache", SearchOption.TopDirectoryOnly);
@@ -213,7 +213,6 @@ namespace claes
                     // 行で分割
                     var lists = lines.Split('\n');
                     if (lists.Length != 1) return;
-                    
                     
                     var key = Path.GetFileNameWithoutExtension(fileInfo.Name);
                     var k = keyDict.GetOrAdd(key,new KeyFile("?", "no-title"));
@@ -249,8 +248,6 @@ namespace claes
             {
                 SetComponents(i, tableLayoutPanel1);
             }
-
-            System.Diagnostics.Debug.WriteLine("setup実行しました");
         }
 
 
@@ -296,7 +293,7 @@ namespace claes
         }
 
         private async void FormShow(object sender, EventArgs e)
-        {
+        {   
             // ダウンロードは別スレッドに投げて非同期でやる
             var tasks = new List<Task>();
             var idx = 0;
@@ -313,25 +310,28 @@ namespace claes
                 await Task.WhenAll(tasks);
             }catch(Exception ex)
             {
+                // 410とか
                 System.Diagnostics.Debug.WriteLine(ex.Message);
             }
-            System.Diagnostics.Debug.WriteLine("All file downloading is finished.");
 
-            // zipファイル展開
-            // これは非同期でやらない。なぜならば展開に順番が必要だから
-            foreach (var item in keyDict)
+            await Task.Run(() =>
             {
-                if (!item.Value.DownloadComplete) continue;
-                
-                ExtractToDirectory(item.Value.TempFileName, modDirectory, true);
-                
-                // キャッシュフォルダ作る
-                using (var w = new StreamWriter(Path.Combine(cacheDirectory,item.Key + ".cache")))
+                // zipファイル展開
+                // これは非同期でやらない。なぜならば展開に順番が必要だから
+                foreach (var item in keyDict)
                 {
-                    w.Write(item.Value.TempFileMd5);
-                }
-            }
+                    if (!item.Value.DownloadComplete) continue;
 
+                    ExtractToDirectory(item.Value.TempFileName, modDirectory, true);
+
+                    // キャッシュフォルダ作る
+                    using (var w = new StreamWriter(Path.Combine(cacheDirectory, item.Key + ".cache")))
+                    {
+                        w.Write(item.Value.TempFileMd5);
+                    }
+                }
+            });
+            
             Application.Exit();
         }
         
@@ -364,7 +364,15 @@ namespace claes
         [STAThread]
         private static void Main()
         {
-            Application.Run(new MainWindow());
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
+            // 非表示
+            // http://bbs.wankuma.com/index.cgi?mode=red&namber=31080&KLOG=55
+            Form f = new MainWindow();
+            f.ShowInTaskbar = false;
+            f.WindowState = FormWindowState.Minimized;
+            Application.Run(f);
         }
     }
 }
