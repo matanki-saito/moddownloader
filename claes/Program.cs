@@ -8,6 +8,7 @@ using System.Net;
 using System.IO;
 using System.Security.Cryptography;
 using System.Collections.Concurrent;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO.Compression;
 using System.Reflection;
@@ -33,16 +34,19 @@ namespace claes
 
     public class KeyFile
     {
-        public KeyFile(string keyFilePath, string title)
+        public KeyFile(string keyFilePath, string title, bool develop)
         {
             KeyFilePath = keyFilePath;
             Title = title;
             DownloadComplete = false;
+            Develop = develop;
         }
 
         public string KeyFilePath { get; }
         public string Title { get;}
         public bool DownloadComplete { set; get; }
+        
+        public bool Develop { set; get; }
         public string TempFileName { get; set; }
         public string TempFileMd5 { get; set; }
         
@@ -52,7 +56,8 @@ namespace claes
     internal class Downloader
     {
         private const string BaseUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/";
-
+        private const string BaseDevUrl = "https://triela.tk:8443/api/v1/distribution/";
+        
         private readonly DownloadView dView;
         private readonly MainWindow uiThread;
         private readonly KeyFile keyFile;
@@ -83,10 +88,19 @@ namespace claes
                 wc.DownloadProgressChanged += DownloadChanged;
                 wc.DownloadFileCompleted += MyDownloadFileCompletedFunc;
 
-                var param1 = keyFile.cachedMd5 != null ? "?dll_md5=" + keyFile.cachedMd5 : "";
-                
-                var uri = new Uri(BaseUrl + key + "/" + exeMd5 + param1);
-                
+                var nvc = new NameValueCollection();
+
+                if (keyFile.cachedMd5 != null)
+                {
+                    nvc.Add("dll_md5",keyFile.cachedMd5);
+                }
+                if (keyFile.Develop)
+                {
+                    nvc.Add("phase","dev");
+                }
+
+                wc.QueryString = nvc;                
+                var uri = new Uri((keyFile.Develop ? BaseDevUrl : BaseUrl) + key + "/" + exeMd5);                
                 downloadTask = wc.DownloadFileTaskAsync(uri,f);
             }
 
@@ -193,10 +207,17 @@ namespace claes
                 {
                     var lines = r.ReadToEnd();
                     // 行で分割
-                    var lists = lines.Split('\n');
+                    string [] del = { "\r\n" };
+                    var lists = lines.Split(del,StringSplitOptions.None);
                     if(lists.Length >= 2)
                     {
-                        keyDict.GetOrAdd(Path.GetFileNameWithoutExtension(fileInfo.Name), new KeyFile(lists[1], lists[0]));
+                        keyDict.GetOrAdd(Path.GetFileNameWithoutExtension(fileInfo.Name),
+                            new KeyFile(
+                                lists[1],
+                                lists[0],
+                                lists.Length > 2 && lists[2] == "dev"
+                                )
+                            );
                     }
                 }
             });
@@ -211,13 +232,15 @@ namespace claes
                 {
                     var lines = r.ReadToEnd();
                     // 行で分割
-                    var lists = lines.Split('\n');
+                    string [] del = { "\r\n" };
+                    
+                    var lists = lines.Split(del,StringSplitOptions.None);
                     if (lists.Length != 1) return;
                     
                     var key = Path.GetFileNameWithoutExtension(fileInfo.Name);
-                    var k = keyDict.GetOrAdd(key,new KeyFile("?", "no-title"));
+                    var k = keyDict.GetOrAdd(key,new KeyFile("?", "no-title",false));
                     k.cachedMd5 = lists[0];
-                    keyDict.AddOrUpdate(key, new KeyFile("?", "no-title"), (s, file) => k);
+                    keyDict.AddOrUpdate(key, new KeyFile("?", "no-title",false), (s, file) => k);
                 }
             });
 
