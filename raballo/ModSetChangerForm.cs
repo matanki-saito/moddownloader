@@ -20,7 +20,7 @@ namespace claes
         private List<ModSet> modsets;
         private List<string> installedMods;
 
-        private System.Diagnostics.Process eu4process;
+        private System.Diagnostics.Process process;
 
         private MyComputerConfiguration config;
 
@@ -32,25 +32,30 @@ namespace claes
         {
             InitializeComponent();
             OptionalInitilaize();
-            // WakeUpEu4();
+            RunExe();
         }
 
-        private void WakeUpEu4()
+        private bool RunExe()
         {
-            if(eu4process != null)
-            {
-                eu4process.CloseMainWindow();
-            }
+            if (process != null) return false;
 
-            eu4process = new System.Diagnostics.Process();
-            eu4process.StartInfo.FileName = @"C:\Program Files (x86)\Steam\steamapps\common\Europa Universalis IV\eu4.exe";
+            process = new System.Diagnostics.Process();
+            process.StartInfo.FileName = config.GameExePath;
 
-            bool result = eu4process.Start();
+            return process.Start();
+        }
+
+        private void ShutDown()
+        {
+            if (process == null) return;
+            process.CloseMainWindow();
+            process.WaitForExit();
+            process = null;
         }
 
         private void OptionalInitilaize()
         {
-            config = new MyComputerConfiguration("Europa Universalis IV");
+            config = new MyComputerConfiguration("Europa Universalis IV", 236850,"eu4.exe");
 
             if (config.ModsetDirectory != null) {
                 LoadModSets();
@@ -124,9 +129,9 @@ namespace claes
             settingsTxt.ActiveMods = requiredModFilePaths;
 
             // 更新
+            ShutDown();
             settingsTxt.Update();
-
-            // WakeUpEu4();
+            RunExe();
         }
 
         private void ComboBox1_ItemChecked(object sender, ItemCheckEventArgs e)

@@ -28,7 +28,7 @@ namespace claes
             var strechMods = new List<string>();
             foreach(var fileName in ActiveMods)
             {
-                strechMods.Add($"\t\"{fileName}\"");
+                strechMods.Add($"\t\"mod/{fileName}\"");
             }
 
             var mainPart = string.Join(rtncode, strechMods);
