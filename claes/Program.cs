@@ -430,6 +430,12 @@ namespace claes
                 System.Diagnostics.Debug.WriteLine(ex.Message);
             }
 
+            // コンプリートしたものだけをuninstall
+            UninstallMods(keyDict
+                .Where(item => item.Value.DownloadComplete)
+                .Select(item => item.Key).ToList<string>(),
+                false);
+
             await Task.Run(() =>
             {
                 var serializer = new SerializerBuilder().Build();
