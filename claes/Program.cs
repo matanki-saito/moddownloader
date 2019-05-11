@@ -310,7 +310,6 @@ namespace claes
             });
 
             // .cache.ymlを見る（新しい形式）
-            
             cacheDict = new ConcurrentDictionary<string, Cache>();
             di = new DirectoryInfo(cacheDirectory);
             files = di.GetFiles("*.yml", SearchOption.TopDirectoryOnly);
@@ -325,6 +324,7 @@ namespace claes
                     cacheDict.GetOrAdd(key, cache);
                 }
             });
+
             // アンインストールモード
             if (Array.IndexOf(cmds, "/uninstall-all") != -1)
             {

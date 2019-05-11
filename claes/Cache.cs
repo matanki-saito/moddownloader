@@ -8,8 +8,16 @@ namespace claes
 {
     public class Cache
     {
+        public Cache()
+        {
+            this.pack_md5 = "";
+            this.file_list = new List<FileInfo>();
+        }
+
         public string pack_md5 { get; set; }
         public List<FileInfo> file_list { get; set; }
+
+
     }
 
     public class FileInfo
