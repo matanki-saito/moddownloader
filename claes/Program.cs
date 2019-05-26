@@ -47,7 +47,6 @@ namespace claes
         public string KeyFilePath { get; }
         public string Title { get;}
         public bool DownloadComplete { set; get; }
-        
         public bool Develop { set; get; }
         public string TempFileName { get; set; }
         public string TempFileMd5 { get; set; }
