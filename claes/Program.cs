@@ -35,17 +35,19 @@ namespace claes
 
     public class KeyFile
     {
-        public KeyFile(string keyFilePath, string title, bool develop)
+        public KeyFile(string keyFilePath, string title, bool develop,long fileSize)
         {
             KeyFilePath = keyFilePath;
             Title = title;
             DownloadComplete = false;
+            FileSize = fileSize;
             Develop = develop;
             Paths = new List<string>();
         }
 
         public string KeyFilePath { get; }
         public string Title { get;}
+        public long FileSize { get; }
         public bool DownloadComplete { set; get; }
         public bool Develop { set; get; }
         public string TempFileName { get; set; }
@@ -122,8 +124,14 @@ namespace claes
 
         private void DownloadChanged(object sender, DownloadProgressChangedEventArgs e)
         {
+            long total = e.TotalBytesToReceive;
+            if(e.TotalBytesToReceive <= 0 )
+            {
+                total = this.keyFile.FileSize;
+            } 
+
             uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
-                dView.Progress.Text = e.TotalBytesToReceive + "byte / " + e.BytesReceived + "byte";
+                dView.Progress.Text = byteRec + "byte" + "/" + totalBytes + "byte";
                 
                 if (!uiThread.viewLatch)
                 {
@@ -136,7 +144,7 @@ namespace claes
                 
                 dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
                 dView.ProgressBar.Value = (int)(byteRec / 1000);
-            }), e.TotalBytesToReceive, e.BytesReceived);
+            }), total, e.BytesReceived);
         }
     }
 
@@ -301,7 +309,8 @@ namespace claes
                             new KeyFile(
                                 lists[1],
                                 lists[0],
-                                lists.Length > 2 && lists[2] == "dev"
+                                lists.Length > 2 && lists[2] == "dev",
+                                lists.Length > 3 ? long.Parse(lists[3]) : -1
                                 )
                             );
                     }
