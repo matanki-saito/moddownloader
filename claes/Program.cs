@@ -12,6 +12,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO.Compression;
 using System.Reflection;
+using YamlDotNet.Serialization;
 
 namespace claes
 {
@@ -34,23 +35,25 @@ namespace claes
 
     public class KeyFile
     {
-        public KeyFile(string keyFilePath, string title, bool develop)
+        public KeyFile(string keyFilePath, string title, bool develop,long fileSize)
         {
             KeyFilePath = keyFilePath;
             Title = title;
             DownloadComplete = false;
+            FileSize = fileSize;
             Develop = develop;
+            Paths = new List<string>();
         }
 
         public string KeyFilePath { get; }
         public string Title { get;}
+        public long FileSize { get; }
         public bool DownloadComplete { set; get; }
-        
         public bool Develop { set; get; }
         public string TempFileName { get; set; }
         public string TempFileMd5 { get; set; }
         
-        public string cachedMd5 { get; set; }
+        public List<string> Paths { get; set; }
     }
 
     internal class Downloader
@@ -61,11 +64,13 @@ namespace claes
         private readonly DownloadView dView;
         private readonly MainWindow uiThread;
         private readonly KeyFile keyFile;
+        private readonly Cache cache;
 
-        public Downloader(DownloadView downloadView, MainWindow uiThread, KeyFile keyFile)
+        public Downloader(DownloadView downloadView, MainWindow uiThread, KeyFile keyFile, Cache cache)
         {
             this.uiThread = uiThread;
             this.keyFile = keyFile;
+            this.cache = cache;
             dView = downloadView;
             dView.CancelBtn.Click += ActionRun;
 
@@ -82,7 +87,7 @@ namespace claes
         public Task StartDownLoad(string key, string exeMd5)
         {
             Task downloadTask;
-            using (var wc = new WebClient())
+            using (var wc = new MyWebClient())
             {
                 var f = keyFile.TempFileName =Path.GetTempFileName();
                 wc.DownloadProgressChanged += DownloadChanged;
@@ -90,9 +95,9 @@ namespace claes
 
                 var nvc = new NameValueCollection();
 
-                if (keyFile.cachedMd5 != null)
+                if (cache.pack_md5 != null)
                 {
-                    nvc.Add("dll_md5",keyFile.cachedMd5);
+                    nvc.Add("dll_md5", cache.pack_md5);
                 }
                 if (keyFile.Develop)
                 {
@@ -100,7 +105,7 @@ namespace claes
                 }
 
                 wc.QueryString = nvc;                
-                var uri = new Uri((keyFile.Develop ? BaseDevUrl : BaseUrl) + key + "/" + exeMd5);                
+                var uri = new Uri((keyFile.Develop ? BaseDevUrl : BaseUrl) + key + "/" + exeMd5);
                 downloadTask = wc.DownloadFileTaskAsync(uri,f);
             }
 
@@ -119,21 +124,23 @@ namespace claes
 
         private void DownloadChanged(object sender, DownloadProgressChangedEventArgs e)
         {
+            MyWebClient w = (MyWebClient)sender;
+
             uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
-                dView.Progress.Text = e.TotalBytesToReceive + "byte / " + e.BytesReceived + "byte";
+                dView.Progress.Text = byteRec + "/" + totalBytes + " byte";
                 
-                if (!uiThread.viewLatch)
+                if (!uiThread.ViewLatch)
                 {
                     uiThread.ShowInTaskbar = true;
                     uiThread.WindowState = FormWindowState.Normal;
-                    uiThread.viewLatch = true;
+                    uiThread.ViewLatch = true;
                 }
                 
                 if (totalBytes <= byteRec) return;
                 
                 dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
                 dView.ProgressBar.Value = (int)(byteRec / 1000);
-            }), e.TotalBytesToReceive, e.BytesReceived);
+            }), w.ContentLength , e.BytesReceived);
         }
     }
 
@@ -161,17 +168,100 @@ namespace claes
         private ConcurrentDictionary<string, KeyFile> keyDict;
         private ConcurrentDictionary<string, string> keyFilePath2Md5;
         private List<DownloadView> downloadViews;
-        public bool viewLatch { get; set; }
+        private ConcurrentDictionary<string, Cache> cacheDict;
+        public bool ViewLatch { get; set; }
+        public string[] Cmds { get; set; }
         
         public MainWindow()
         {
-            viewLatch = false;
+            ViewLatch = false;
             SetUp(); 
             Shown += FormShow;
         }
 
+        private void UninstallMods(IEnumerable<string> list, bool removeKey)
+        {
+            foreach (var id in list)
+            {
+                if(cacheDict.TryGetValue(id,out Cache co))
+                {
+                    // 展開したファイルを削除する
+                    Parallel.ForEach(co.file_list, fi =>
+                    {
+                        File.Delete(fi.path);
+                    });
+
+                    // cacheファイルそのものも削除
+                    File.Delete(Path.Combine(cacheDirectory,id + ".yml"));
+
+                    // 登録エントリも削除
+                    cacheDict.TryRemove(id,out Cache cor);
+
+                    if (removeKey)
+                    {
+                        // keyも削除
+                        File.Delete(Path.Combine(keyDirectory, id + ".key"));
+                        // 登録エントリも削除
+                        keyDict.TryRemove(id, out KeyFile kor);
+                    }
+                }
+            }
+        }
+
+        private IEnumerable<string> Validaton()
+        {
+            var uninstallKeyList = new List<string>();
+
+            // keyファイル基準
+            foreach(var k in this.keyDict)
+            {
+                // keyファイルはあるが、cacheファイルがない 
+                if (!cacheDict.TryGetValue(k.Key, out Cache co))
+                {
+                    // 未ダウンロードで正常な動作
+                    continue;
+                } else
+                {
+                    // かつハッシュ値も一致している
+                    foreach(var fi in co.file_list)
+                    {
+                        if (!File.Exists(fi.path))
+                        {
+                            // cacheファイルに記載されたファイルリストが存在していない
+                            uninstallKeyList.Add(k.Key);
+                            goto FIRST_LOOP_LAST;
+                        }
+
+                        if(Util.CalculateMd5(fi.path) != fi.md5)
+                        {
+                            // ファイルのmd5が一致しない
+                            uninstallKeyList.Add(k.Key);
+                            goto FIRST_LOOP_LAST;
+                        }
+                    }
+                    // 変更されていないので正しい動作
+                }
+            FIRST_LOOP_LAST:;
+            }
+
+            foreach (var c in this.cacheDict)
+            {
+                // keyファイルがないが、cacheファイルはある
+                if (!keyDict.TryGetValue(c.Key, out KeyFile ko))
+                {
+                    // 不正常。おそらく自分で消した？
+                    uninstallKeyList.Add(c.Key);
+                }
+            }
+
+            return uninstallKeyList.Distinct();
+        }
+
         private void SetUp()
         {
+            // オプション取得
+            Cmds = System.Environment.GetCommandLineArgs();
+
             // exeのあるディレクトリを基準とする
             currentDirectory = Directory.GetParent(Assembly.GetExecutingAssembly().Location).FullName;
 
@@ -215,34 +305,41 @@ namespace claes
                             new KeyFile(
                                 lists[1],
                                 lists[0],
-                                lists.Length > 2 && lists[2] == "dev"
+                                lists.Length > 2 && lists[2] == "dev",
+                                lists.Length > 3 ? long.Parse(lists[3]) : -1
                                 )
                             );
                     }
                 }
             });
-            
-            // .cacheを見る
+
+            // .cache.ymlを見る（新しい形式）
+            cacheDict = new ConcurrentDictionary<string, Cache>();
             di = new DirectoryInfo(cacheDirectory);
-            files = di.GetFiles("*.cache", SearchOption.TopDirectoryOnly);
+            files = di.GetFiles("*.yml", SearchOption.TopDirectoryOnly);
             Parallel.ForEach(files, fileInfo =>
             {
                 // 行読み取り
                 using (var r = new StreamReader(fileInfo.FullName))
                 {
-                    var lines = r.ReadToEnd();
-                    // 行で分割
-                    string [] del = { "\r\n" };
-                    
-                    var lists = lines.Split(del,StringSplitOptions.None);
-                    if (lists.Length != 1) return;
-                    
+                    var deserializer = new DeserializerBuilder().Build();
+                    var cache = deserializer.Deserialize<Cache>(r);
                     var key = Path.GetFileNameWithoutExtension(fileInfo.Name);
-                    var k = keyDict.GetOrAdd(key,new KeyFile("?", "no-title",false));
-                    k.cachedMd5 = lists[0];
-                    keyDict.AddOrUpdate(key, new KeyFile("?", "no-title",false), (s, file) => k);
+                    cacheDict.GetOrAdd(key, cache);
                 }
             });
+
+            // アンインストールモード
+            if (Array.IndexOf(Cmds, "/uninstall-all") != -1)
+            {
+                UninstallMods(keyDict.Keys, true);
+            }
+            else {
+                // keyファイルとcacheファイルと展開されたファイルの整合性を確認する
+                var uninstallKeyList = Validaton();
+                // 削除すべしとされたkeyを削除する。
+                UninstallMods(uninstallKeyList, false);
+            }
 
             // キーファイルを集約してMD5化する。ほとんど同じファイルを見ているはずなので…
             keyFilePath2Md5 = new ConcurrentDictionary<string, string>();
@@ -322,7 +419,7 @@ namespace claes
             var idx = 0;
             foreach (var item in keyDict)
             {
-                var dl = new Downloader(downloadViews[idx++], this,item.Value);
+                var dl = new Downloader(downloadViews[idx++], this,item.Value,cacheDict.GetOrAdd(item.Key,new Cache()));
                 var exeMd5 = keyFilePath2Md5.GetOrAdd(item.Value.KeyFilePath,"NO-MD5");
                 tasks.Add(dl.StartDownLoad(item.Key,exeMd5));
             }
@@ -337,20 +434,32 @@ namespace claes
                 System.Diagnostics.Debug.WriteLine(ex.Message);
             }
 
+            // コンプリートしたものだけをuninstall
+            UninstallMods(keyDict
+                .Where(item => item.Value.DownloadComplete)
+                .Select(item => item.Key).ToList<string>(),
+                false);
+
             await Task.Run(() =>
             {
+                var serializer = new SerializerBuilder().Build();
                 // zipファイル展開
                 // これは非同期でやらない。なぜならば展開に順番が必要だから
                 foreach (var item in keyDict)
                 {
                     if (!item.Value.DownloadComplete) continue;
 
-                    ExtractToDirectory(item.Value.TempFileName, modDirectory, true);
-
-                    // キャッシュフォルダ作る
-                    using (var w = new StreamWriter(Path.Combine(cacheDirectory, item.Key + ".cache")))
+                    Cache c = new Cache
                     {
-                        w.Write(item.Value.TempFileMd5);
+                        pack_md5 = item.Value.TempFileMd5
+                    };
+
+                    c.file_list = ExtractToDirectory(item.Value.TempFileName, modDirectory, true);
+
+                    // キャッシュファイル作る
+                    using (var w = new StreamWriter(Path.Combine(cacheDirectory, item.Key + ".yml")))
+                    {
+                        w.Write(serializer.Serialize(c));
                     }
                 }
             });
@@ -358,14 +467,16 @@ namespace claes
             Application.Exit();
         }
         
-        private static void ExtractToDirectory(string archivePath, string destinationDirectoryName, bool overwrite)
+        private static List<FileInfo> ExtractToDirectory(string archivePath, string destinationDirectoryName, bool overwrite)
         {
+            var pathList = new List<FileInfo>();
+
             using (var archive = ZipFile.OpenRead(archivePath))
             {
                 if (!overwrite)
                 {
                     archive.ExtractToDirectory(destinationDirectoryName);
-                    return;
+                    return pathList;
                 }
                 foreach (var file in archive.Entries)
                 {
@@ -376,9 +487,20 @@ namespace claes
                         Directory.CreateDirectory(directory);
 
                     if (file.Name != "")
+                    {
                         file.ExtractToFile(completeFileName, true);
+
+                        pathList.Add(new FileInfo
+                        {
+                            md5 = Util.CalculateMd5(completeFileName),
+                            last_update = DateTime.Now,
+                            path = completeFileName
+                        });
+                    }
                 }
             }
+
+            return pathList;
         }
     }
 
@@ -390,12 +512,14 @@ namespace claes
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // 非表示
+            // 非表示にする方法。起動時に最小化するだけです。
             // http://bbs.wankuma.com/index.cgi?mode=red&namber=31080&KLOG=55
-            Form f = new MainWindow();
-            f.ShowInTaskbar = false;
-            f.WindowState = FormWindowState.Minimized;
-            Application.Run(f);
+            Form form = new MainWindow
+            {
+                ShowInTaskbar = false,
+                WindowState = FormWindowState.Minimized
+            };
+            Application.Run(form);
         }
     }
 }
