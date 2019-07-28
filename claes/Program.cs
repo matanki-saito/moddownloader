@@ -87,7 +87,7 @@ namespace claes
         public Task StartDownLoad(string key, string exeMd5)
         {
             Task downloadTask;
-            using (var wc = new WebClient())
+            using (var wc = new MyWebClient())
             {
                 var f = keyFile.TempFileName =Path.GetTempFileName();
                 wc.DownloadProgressChanged += DownloadChanged;
@@ -105,7 +105,7 @@ namespace claes
                 }
 
                 wc.QueryString = nvc;                
-                var uri = new Uri((keyFile.Develop ? BaseDevUrl : BaseUrl) + key + "/" + exeMd5);                
+                var uri = new Uri((keyFile.Develop ? BaseDevUrl : BaseUrl) + key + "/" + exeMd5);
                 downloadTask = wc.DownloadFileTaskAsync(uri,f);
             }
 
@@ -124,11 +124,7 @@ namespace claes
 
         private void DownloadChanged(object sender, DownloadProgressChangedEventArgs e)
         {
-            long total = e.TotalBytesToReceive;
-            if(e.TotalBytesToReceive <= 0 )
-            {
-                total = this.keyFile.FileSize;
-            } 
+            MyWebClient w = (MyWebClient)sender;
 
             uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
                 dView.Progress.Text = byteRec + "byte" + "/" + totalBytes + "byte";
@@ -144,7 +140,7 @@ namespace claes
                 
                 dView.ProgressBar.Maximum = (int)(totalBytes / 1000);
                 dView.ProgressBar.Value = (int)(byteRec / 1000);
-            }), total, e.BytesReceived);
+            }), w.ContentLength , e.BytesReceived);
         }
     }
 
