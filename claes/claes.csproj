@@ -71,7 +71,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Cache.cs" />
-    <Compile Include="DownloadFileTaskAsync.cs" />
     <Compile Include="MyWebClient .cs">
       <SubType>Component</SubType>
     </Compile>

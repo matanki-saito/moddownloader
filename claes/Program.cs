@@ -127,13 +127,13 @@ namespace claes
             MyWebClient w = (MyWebClient)sender;
 
             uiThread.Invoke(new Action<long, long>(delegate (long totalBytes, long byteRec) {
-                dView.Progress.Text = byteRec + "byte" + "/" + totalBytes + "byte";
+                dView.Progress.Text = byteRec + "/" + totalBytes + " byte";
                 
-                if (!uiThread.viewLatch)
+                if (!uiThread.ViewLatch)
                 {
                     uiThread.ShowInTaskbar = true;
                     uiThread.WindowState = FormWindowState.Normal;
-                    uiThread.viewLatch = true;
+                    uiThread.ViewLatch = true;
                 }
                 
                 if (totalBytes <= byteRec) return;
@@ -169,12 +169,12 @@ namespace claes
         private ConcurrentDictionary<string, string> keyFilePath2Md5;
         private List<DownloadView> downloadViews;
         private ConcurrentDictionary<string, Cache> cacheDict;
-        public bool viewLatch { get; set; }
-        public string[] cmds { get; set; }
+        public bool ViewLatch { get; set; }
+        public string[] Cmds { get; set; }
         
         public MainWindow()
         {
-            viewLatch = false;
+            ViewLatch = false;
             SetUp(); 
             Shown += FormShow;
         }
@@ -260,7 +260,7 @@ namespace claes
         private void SetUp()
         {
             // オプション取得
-            cmds = System.Environment.GetCommandLineArgs();
+            Cmds = System.Environment.GetCommandLineArgs();
 
             // exeのあるディレクトリを基準とする
             currentDirectory = Directory.GetParent(Assembly.GetExecutingAssembly().Location).FullName;
@@ -330,7 +330,7 @@ namespace claes
             });
 
             // アンインストールモード
-            if (Array.IndexOf(cmds, "/uninstall-all") != -1)
+            if (Array.IndexOf(Cmds, "/uninstall-all") != -1)
             {
                 UninstallMods(keyDict.Keys, true);
             }
