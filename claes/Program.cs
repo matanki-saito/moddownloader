@@ -59,7 +59,7 @@ namespace claes
     internal class Downloader
     {
         private const string BaseUrl = "https://d3mq2c18xv0s3o.cloudfront.net/api/v1/distribution/";
-        private const string BaseDevUrl = "https://triela.tk:8443/api/v1/distribution/";
+        private const string BaseDevUrl = "https://triela.ga:8443/api/v1/distribution/";
         
         private readonly DownloadView dView;
         private readonly MainWindow uiThread;

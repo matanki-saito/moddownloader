@@ -49,7 +49,7 @@ namespace dllautoupdater
             }
             var baseUrl = (phase == "prod") ?
                 "https://d3mq2c18xv0s3o.cloudfront.net/" :
-                "https://triela.tk:8443/";
+                "https://triela.ga:8443/";
 
             // assembly request params
             var nameValueCollection = new NameValueCollection();
